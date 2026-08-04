@@ -1,0 +1,44 @@
+---
+interface: eth0
+
+# How long to wait after a failed DNS update before retrying (default 5m).
+retry_interval: 5m
+
+# How often to re-verify static records after startup (default 1h).
+# Static records are always verified at program start.
+static_verify_interval: 1h
+
+dns:
+  server: "ns1.example.com:53"
+  zone: "example.com."
+  tsig:
+    name: "ifnsupdate-key.example.com."
+    secret: "BASE64SECRET=="
+    algorithm: hmac-sha256
+
+records:
+  # Interface-backed A/AAAA (no value → taken from the monitored interface).
+  - name: myhost
+    type: A
+    ttl: 300
+  - name: myhost
+    type: AAAA
+    ttl: 300
+
+  # Static A/AAAA (value is a fixed address, not from the interface).
+  # - name: fixed
+  #   type: A
+  #   value: "192.0.2.10"
+  #   ttl: 300
+
+  # CNAME (value is the target name; relative names get dns.zone appended).
+  # - name: www
+  #   type: CNAME
+  #   value: myhost
+  #   ttl: 300
+
+  # TXT
+  # - name: myhost
+  #   type: TXT
+  #   value: "v=spf1 -all"
+  #   ttl: 300

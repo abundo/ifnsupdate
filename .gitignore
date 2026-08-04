@@ -1,0 +1,15 @@
+# Build / release outputs
+/ifnsupdate
+/dist/
+
+# Local config (may contain TSIG secrets)
+*.local
+config.yaml
+config.yaml.local
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store

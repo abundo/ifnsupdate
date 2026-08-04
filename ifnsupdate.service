@@ -1,0 +1,48 @@
+[Unit]
+Description=ifnsupdate (RFC 2136 interface DNS UPDATE)
+Documentation=https://github.com/abundo/ifnsupdate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ifnsupdate -config /etc/ifnsupdate/config.yaml
+Restart=on-failure
+# Back off restarts on crash loops (RestartSteps/RestartMaxDelaySec need systemd ≥ 254)
+RestartSec=5
+RestartSteps=5
+RestartMaxDelaySec=5min
+StartLimitIntervalSec=15min
+StartLimitBurst=10
+
+# Prefer a dedicated user; create with:
+#   useradd --system --no-create-home --shell /usr/sbin/nologin ifnsupdate
+# Config contains TSIG secrets — install as root:ifnsupdate mode 0640 (or 0600 if run as root).
+# User=ifnsupdate
+# Group=ifnsupdate
+
+# Logging (journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ifnsupdate
+
+# Hardening (safe for netlink address monitoring as non-root)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+# Allow reading config and writing nothing under /etc
+ReadOnlyPaths=/etc/ifnsupdate
+# AmbientCapabilities=  # not required for typical address monitoring
+
+[Install]
+WantedBy=multi-user.target

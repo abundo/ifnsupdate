@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: ifnsupdate
+
+# Local artifacts always go under dist/ (gitignored). Do not commit release binaries.
+# GitHub Release assets are a flat list of archives + checksums (no folders on the release page).
+
+before:
+  hooks:
+    - go test ./...
+
+builds:
+  - id: ifnsupdate
+    main: .
+    binary: ifnsupdate
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux # netlink — Linux only
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - formats: [tar.gz]
+    # Extract into ifnsupdate_vX.Y.Z_linux_amd64/ rather than scattering files in cwd.
+    wrap_in_directory: true
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - config.yaml.example
+      - ifnsupdate.service
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "{{ .Tag }}"
