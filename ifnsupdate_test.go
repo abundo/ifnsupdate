@@ -1137,13 +1137,20 @@ func TestFailedUpdateAllowsRetry(t *testing.T) {
 		_ = w.WriteMsg(m)
 	})
 
+	// Only configure record types for address families present on the interface.
+	// Otherwise buildRR fails with "no AAAA address" before any UPDATE is sent
+	// (common on CI runners that only have IPv4).
+	recs := []Record{}
+	if v4 != nil {
+		recs = append(recs, Record{Name: "h.example.com.", Type: "A", TTL: 60})
+	}
+	if v6 != nil {
+		recs = append(recs, Record{Name: "h.example.com.", Type: "AAAA", TTL: 60})
+	}
 	cfg := &Config{
 		Interface: "eth0",
 		DNS:       DNSConfig{Server: addr, Zone: "example.com."},
-		Records: []Record{
-			{Name: "h.example.com.", Type: "A", TTL: 60},
-			{Name: "h.example.com.", Type: "AAAA", TTL: 60},
-		},
+		Records:   recs,
 	}
 	_ = validateConfig(cfg)
 	last := &lastIPs{}
