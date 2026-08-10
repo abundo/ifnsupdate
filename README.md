@@ -9,6 +9,7 @@ When the interface gains, loses, or changes a global IPv4/IPv6 address, the clie
 - Watches a single interface via netlink address events
 - Updates interface-backed `A` / `AAAA` records from the interface’s global unicast addresses
 - Maintains **static** records independent of the interface: fixed `A`/`AAAA`, `CNAME`, `TXT`
+- Optional **last-update timestamp** `TXT` (no `value`): written as ISO 8601 / RFC3339 UTC whenever an UPDATE runs
 - Optional TSIG authentication (`hmac-sha256` and other common algorithms)
 - Replace semantics: remove the existing RRset, then insert the new record
 - Configurable retry after failed updates; periodic re-verify of static records
@@ -144,10 +145,15 @@ records:
     value: myhost
     ttl: 300
 
-  # TXT
+  # TXT (static)
   - name: myhost
     type: TXT
     value: "v=spf1 -all"
+    ttl: 300
+
+  # Last-update timestamp (no value → ISO 8601 UTC on each UPDATE)
+  - name: myhost-updated
+    type: TXT
     ttl: 300
 ```
 
@@ -166,7 +172,7 @@ records:
 | `dns.tsig.algorithm`     | no        | Default `hmac-sha256`. Also: `hmac-md5`, `hmac-sha1`, `hmac-sha224`, `hmac-sha384`, `hmac-sha512` |
 | `records[].name`         | yes       | Name to maintain: relative to `dns.zone` (`myhost`), `@` for the apex, or an FQDN **in** the zone |
 | `records[].type`         | yes       | `A`, `AAAA`, `CNAME`, or `TXT`                                                                    |
-| `records[].value`        | see below | Static RDATA (required for CNAME/TXT; optional for A/AAAA)                                        |
+| `records[].value`        | see below | Static RDATA (required for CNAME; optional for A/AAAA/TXT — empty TXT = last-update timestamp)    |
 | `records[].ttl`          | no        | TTL in seconds (default `300`)                                                                    |
 
 Trailing dots on zone and TSIG name are normalized automatically. Durations use Go syntax (`30s`, `5m`, `1h`, …).
@@ -178,7 +184,10 @@ Trailing dots on zone and TSIG name are normalized automatically. Durations use 
 | `A` / `AAAA` **without** `value` | First global address on `interface`     | Startup; interface address change; failed-retry |
 | `A` / `AAAA` **with** `value`    | Fixed IP in config                      | Startup; every `static_verify_interval`         |
 | `CNAME` (requires `value`)       | Target name (relative or absolute FQDN) | Startup; every `static_verify_interval`         |
-| `TXT` (requires `value`)         | Literal string                          | Startup; every `static_verify_interval`         |
+| `TXT` **with** `value`           | Literal string                          | Startup; every `static_verify_interval`         |
+| `TXT` **without** `value`        | Current UTC time (RFC3339 / ISO 8601)   | Written whenever any UPDATE runs (rides along)  |
+
+A timestamp `TXT` is only rewritten when something else needs fixing (or the TXT is missing). If the zone already has a single TXT at that name, it is left alone so `dig` shows the real last-update time, not “now”.
 
 **Record names** are resolved against `dns.zone` at load time:
 
@@ -254,6 +263,7 @@ The example unit is [`ifnsupdate.service`](ifnsupdate.service). Protect `config.
   DNS UPDATE (zone)  ──UDP──►  nameserver:53
     - delete RRset
     - insert new RR(s)
+    - optional timestamp TXT (RFC3339 UTC)
 ```
 
 - **Global unicast only (dynamic A/AAAA):** loopback, multicast, and link-local addresses are ignored. Private IPv4 (`10/8`, `192.168/16`, …) and IPv6 ULA (`fd00::/8`) are currently **included**, which is useful on LANs and VPN interfaces.

@@ -37,8 +37,14 @@ records:
   #   value: myhost
   #   ttl: 300
 
-  # TXT
+  # TXT (static string)
   # - name: myhost
   #   type: TXT
   #   value: "v=spf1 -all"
+  #   ttl: 300
+
+  # Last-update timestamp TXT (no value → ISO 8601 / RFC3339 UTC when an UPDATE runs).
+  # dig TXT shows when ifnsupdate last successfully published this name's records.
+  # - name: myhost
+  #   type: TXT
   #   ttl: 300

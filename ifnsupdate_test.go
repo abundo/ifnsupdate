@@ -68,13 +68,23 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: "value is required for CNAME",
 		},
 		{
-			name: "TXT without value",
+			name: "TXT without value is timestamp",
 			cfg: &Config{
 				Interface: "eth0",
-				DNS:       DNSConfig{Server: "ns:53", Zone: "ex.com."},
+				DNS:       DNSConfig{Server: "ns:53", Zone: "example.com."},
 				Records:   []Record{{Name: "h", Type: "TXT"}},
 			},
-			wantErr: "value is required for TXT",
+			check: func(t *testing.T, cfg *Config) {
+				if !cfg.Records[0].isTimestamp() {
+					t.Errorf("empty TXT should be timestamp: %+v", cfg.Records[0])
+				}
+				if cfg.Records[0].isStatic() {
+					t.Error("timestamp TXT should not be static")
+				}
+				if cfg.Records[0].Name != "h.example.com." {
+					t.Errorf("name = %q", cfg.Records[0].Name)
+				}
+			},
 		},
 		{
 			name: "static A with bad IP",
@@ -1576,17 +1586,262 @@ func TestFilterRecords(t *testing.T) {
 		{Name: "c.", Type: "CNAME", Value: "a."},
 		{Name: "d.", Type: "TXT", Value: "x"},
 		{Name: "e.", Type: "AAAA"},
+		{Name: "ts.", Type: "TXT"}, // timestamp
 	}
 	dyn := filterRecords(recs, scopeDynamic)
-	if len(dyn) != 2 || dyn[0].Name != "a." || dyn[1].Name != "e." {
+	// dynamic A/AAAA + timestamp rides along
+	if len(dyn) != 3 {
 		t.Fatalf("dynamic = %+v", dyn)
 	}
+	if dyn[0].Name != "a." || dyn[1].Name != "e." || dyn[2].Name != "ts." {
+		t.Fatalf("dynamic names = %+v", dyn)
+	}
 	st := filterRecords(recs, scopeStatic)
-	if len(st) != 3 {
+	// static A, CNAME, static TXT + timestamp rides along
+	if len(st) != 4 {
 		t.Fatalf("static = %+v", st)
 	}
 	all := filterRecords(recs, scopeAll)
-	if len(all) != 5 {
+	if len(all) != 6 {
 		t.Fatalf("all = %+v", all)
+	}
+}
+
+func TestTimestampTXTValue(t *testing.T) {
+	// Mutates package-level nowFunc; do not run in parallel with other timestamp tests.
+	fixed := time.Date(2026, 3, 28, 14, 30, 0, 0, time.UTC)
+	old := nowFunc
+	nowFunc = func() time.Time { return fixed }
+	t.Cleanup(func() { nowFunc = old })
+
+	if got := timestampTXTValue(); got != "2026-03-28T14:30:00Z" {
+		t.Fatalf("timestampTXTValue = %q", got)
+	}
+
+	rr, rdata, err := buildRR(Record{Name: "ts.example.com.", Type: "TXT", TTL: 60}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rdata != "2026-03-28T14:30:00Z" {
+		t.Fatalf("rdata = %q", rdata)
+	}
+	txt, ok := rr.(*dns.TXT)
+	if !ok {
+		t.Fatalf("rr type %T", rr)
+	}
+	if strings.Join(txt.Txt, "") != "2026-03-28T14:30:00Z" {
+		t.Fatalf("TXT = %v", txt.Txt)
+	}
+}
+
+func TestRecordMatchesTimestampTXT(t *testing.T) {
+	// Existing timestamp TXT of any value matches; missing does not.
+	var serve atomic.Bool
+	serve.Store(true)
+	addr := startMockDNS(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		if serve.Load() && len(r.Question) > 0 && r.Question[0].Qtype == dns.TypeTXT {
+			m.Answer = append(m.Answer, &dns.TXT{
+				Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 60},
+				Txt: []string{"2020-01-01T00:00:00Z"},
+			})
+		}
+		_ = w.WriteMsg(m)
+	})
+	cfg := &Config{DNS: DNSConfig{Server: addr}}
+	ts := Record{Name: "ts.example.com.", Type: "TXT", TTL: 60}
+
+	ok, err := recordMatches(cfg, ts, nil, nil)
+	if err != nil || !ok {
+		t.Fatalf("existing timestamp should match, ok=%v err=%v", ok, err)
+	}
+	serve.Store(false)
+	ok, err = recordMatches(cfg, ts, nil, nil)
+	if err != nil || ok {
+		t.Fatalf("missing timestamp should not match, ok=%v err=%v", ok, err)
+	}
+}
+
+func TestTimestampTXTDoesNotForceUpdateWhenPresent(t *testing.T) {
+	// When A is correct and timestamp TXT exists (any value), no UPDATE is needed.
+	// An old ISO timestamp is left alone so dig still shows the real last-update time.
+	v4 := net.ParseIP("192.0.2.10").To4()
+	addr := startMockDNS(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		if len(r.Question) == 0 {
+			_ = w.WriteMsg(m)
+			return
+		}
+		q := r.Question[0]
+		switch q.Qtype {
+		case dns.TypeA:
+			m.Answer = append(m.Answer, &dns.A{
+				Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+				A:   v4,
+			})
+		case dns.TypeTXT:
+			m.Answer = append(m.Answer, &dns.TXT{
+				Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 60},
+				Txt: []string{"2020-01-01T00:00:00Z"},
+			})
+		}
+		_ = w.WriteMsg(m)
+	})
+
+	recs := []Record{
+		{Name: "h.example.com.", Type: "A", TTL: 60},
+		{Name: "h.example.com.", Type: "TXT", TTL: 60}, // timestamp
+	}
+	cfg := &Config{
+		DNS:     DNSConfig{Server: addr, Zone: "example.com."},
+		Records: recs,
+	}
+	if recordsNeedUpdate(cfg, recs, v4, nil) {
+		t.Fatal("should not need update when A matches and timestamp exists")
+	}
+}
+
+func TestPerformDNSUpdateTimestampTXT(t *testing.T) {
+	fixed := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	old := nowFunc
+	nowFunc = func() time.Time { return fixed }
+	t.Cleanup(func() { nowFunc = old })
+
+	var (
+		mu       sync.Mutex
+		received []*dns.Msg
+	)
+	addr := startMockDNS(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		mu.Lock()
+		received = append(received, r.Copy())
+		mu.Unlock()
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Rcode = dns.RcodeSuccess
+		_ = w.WriteMsg(m)
+	})
+
+	recs := []Record{
+		{Name: "host.example.com.", Type: "A", TTL: 300},
+		{Name: "host.example.com.", Type: "TXT", TTL: 300}, // timestamp
+	}
+	cfg := &Config{
+		DNS:     DNSConfig{Server: addr, Zone: "example.com."},
+		Records: recs,
+	}
+	v4 := net.ParseIP("192.0.2.10").To4()
+	if err := performDNSUpdate(cfg, recs, v4, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 1 {
+		t.Fatalf("expected 1 UPDATE, got %d", len(received))
+	}
+	var sawA, sawTS bool
+	for _, rr := range received[0].Ns {
+		switch r := rr.(type) {
+		case *dns.A:
+			if r.A.Equal(v4) {
+				sawA = true
+			}
+		case *dns.TXT:
+			if strings.Join(r.Txt, "") == "2026-08-10T12:00:00Z" {
+				sawTS = true
+			}
+		}
+	}
+	if !sawA || !sawTS {
+		t.Fatalf("missing inserts A=%v timestamp=%v; ns=%v", sawA, sawTS, received[0].Ns)
+	}
+}
+
+func TestTimestampTXTUpdatedWhenANeedsFix(t *testing.T) {
+	// A wrong → UPDATE rewrites A and timestamp; existing old timestamp is not enough alone.
+	fixed := time.Date(2026, 8, 10, 15, 0, 0, 0, time.UTC)
+	old := nowFunc
+	nowFunc = func() time.Time { return fixed }
+	t.Cleanup(func() { nowFunc = old })
+
+	v4want := net.ParseIP("192.0.2.10").To4()
+	v4old := net.ParseIP("192.0.2.99").To4()
+	var (
+		updates   atomic.Int32
+		published atomic.Bool
+		mu        sync.Mutex
+		lastTXT   string
+	)
+	addr := startMockDNS(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		if r.Opcode == dns.OpcodeUpdate {
+			updates.Add(1)
+			published.Store(true)
+			for _, rr := range r.Ns {
+				if t, ok := rr.(*dns.TXT); ok {
+					mu.Lock()
+					lastTXT = strings.Join(t.Txt, "")
+					mu.Unlock()
+				}
+			}
+			m.Rcode = dns.RcodeSuccess
+			_ = w.WriteMsg(m)
+			return
+		}
+		m.Rcode = dns.RcodeSuccess
+		if len(r.Question) == 0 {
+			_ = w.WriteMsg(m)
+			return
+		}
+		q := r.Question[0]
+		switch q.Qtype {
+		case dns.TypeA:
+			ip := v4old
+			if published.Load() {
+				ip = v4want
+			}
+			m.Answer = append(m.Answer, &dns.A{
+				Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+				A:   ip,
+			})
+		case dns.TypeTXT:
+			// Always present so timestamp alone does not drive the update.
+			txt := "2020-01-01T00:00:00Z"
+			if published.Load() {
+				mu.Lock()
+				if lastTXT != "" {
+					txt = lastTXT
+				}
+				mu.Unlock()
+			}
+			m.Answer = append(m.Answer, &dns.TXT{
+				Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 60},
+				Txt: []string{txt},
+			})
+		}
+		_ = w.WriteMsg(m)
+	})
+
+	recs := []Record{
+		{Name: "h.example.com.", Type: "A", TTL: 60},
+		{Name: "h.example.com.", Type: "TXT", TTL: 60},
+	}
+	cfg := &Config{
+		DNS:     DNSConfig{Server: addr, Zone: "example.com."},
+		Records: recs,
+	}
+	if err := updateAndVerify(cfg, recs, v4want, nil); err != nil {
+		t.Fatal(err)
+	}
+	if updates.Load() != 1 {
+		t.Fatalf("updates=%d want 1", updates.Load())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if lastTXT != "2026-08-10T15:00:00Z" {
+		t.Fatalf("timestamp rdata = %q", lastTXT)
 	}
 }

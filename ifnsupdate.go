@@ -57,24 +57,43 @@ type TSIGConfig struct {
 // Record is a DNS name to maintain.
 //
 // A/AAAA without value are filled from the monitored interface.
-// A/AAAA with value, and all CNAME/TXT records, are static.
+// A/AAAA with value, CNAME, and TXT with value are static.
+// TXT without value is a last-update timestamp (ISO 8601 / RFC3339).
 type Record struct {
 	Name  string `yaml:"name"`  // relative to zone (e.g. "host") or FQDN in zone
 	Type  string `yaml:"type"`  // "A", "AAAA", "CNAME", or "TXT"
 	TTL   uint32 `yaml:"ttl"`   // seconds
-	Value string `yaml:"value"` // static RDATA: IP, CNAME target, or TXT string
+	Value string `yaml:"value"` // static RDATA: IP, CNAME target, or TXT string; empty TXT = timestamp
 }
 
-// isStatic reports whether rec is not derived from the interface address.
+// isTimestamp reports whether rec is a last-update TXT (type TXT, no value).
+// Its RDATA is set to the current UTC time in RFC3339 form whenever an UPDATE runs.
+func (r Record) isTimestamp() bool {
+	return r.Type == "TXT" && r.Value == ""
+}
+
+// isStatic reports whether rec is not derived from the interface address
+// and is not a last-update timestamp.
 func (r Record) isStatic() bool {
 	switch r.Type {
-	case "CNAME", "TXT":
+	case "CNAME":
 		return true
+	case "TXT":
+		// Non-empty value is a fixed string; empty is a dynamic timestamp.
+		return r.Value != ""
 	case "A", "AAAA":
 		return r.Value != ""
 	default:
 		return false
 	}
+}
+
+// nowFunc is the clock used for timestamp TXT records. Tests may replace it.
+var nowFunc = time.Now
+
+// timestampTXTValue returns the RDATA for a last-update timestamp TXT.
+func timestampTXTValue() string {
+	return nowFunc().UTC().Format(time.RFC3339)
 }
 
 // nameInZone reports whether name is the zone apex or a strict subdomain of zone.
@@ -251,9 +270,7 @@ func validateConfig(cfg *Config) error {
 			}
 			cfg.Records[i].Value = target
 		case "TXT":
-			if value == "" {
-				return fmt.Errorf("records[%d].value is required for TXT", i)
-			}
+			// Empty value: last-update timestamp (RFC3339). Non-empty: static string.
 		default:
 			return fmt.Errorf("records[%d].type must be A, AAAA, CNAME, or TXT", i)
 		}
@@ -267,6 +284,12 @@ func filterRecords(recs []Record, scope recordScope) []Record {
 	}
 	out := make([]Record, 0, len(recs))
 	for _, r := range recs {
+		// Last-update timestamps ride along with every reconcile scope so any
+		// successful UPDATE refreshes the "when last updated" marker.
+		if r.isTimestamp() {
+			out = append(out, r)
+			continue
+		}
 		static := r.isStatic()
 		if scope == scopeStatic && static {
 			out = append(out, r)
@@ -325,13 +348,17 @@ func buildRR(rec Record, v4, v6 net.IP) (dns.RR, string, error) {
 		}
 		return rr, rec.Value, nil
 	case "TXT":
+		val := rec.Value
+		if rec.isTimestamp() {
+			val = timestampTXTValue()
+		}
 		// Quote so spaces and special characters are valid presentation format.
-		rrStr := fmt.Sprintf("%s %d IN TXT %q", rec.Name, rec.TTL, rec.Value)
+		rrStr := fmt.Sprintf("%s %d IN TXT %q", rec.Name, rec.TTL, val)
 		rr, err := dns.NewRR(rrStr)
 		if err != nil {
 			return nil, "", fmt.Errorf("invalid RR %q: %w", rrStr, err)
 		}
-		return rr, rec.Value, nil
+		return rr, val, nil
 	default:
 		return nil, "", fmt.Errorf("unsupported type %q", rec.Type)
 	}
@@ -449,7 +476,16 @@ func recordMatches(cfg *Config, rec Record, v4, v6 net.IP) (bool, error) {
 				texts = append(texts, strings.Join(t.Txt, ""))
 			}
 		}
-		if len(texts) != 1 || texts[0] != rec.Value {
+		if len(texts) != 1 {
+			return false, nil
+		}
+		// Timestamp TXT: any single existing RR is fine. We only rewrite it when
+		// some other record in the same UPDATE batch needs fixing (or it is missing),
+		// so an old ISO timestamp is left alone and still means "last update time".
+		if rec.isTimestamp() {
+			return true, nil
+		}
+		if texts[0] != rec.Value {
 			return false, nil
 		}
 		return true, nil
@@ -484,6 +520,8 @@ func recordsNeedUpdate(cfg *Config, recs []Record, v4, v6 net.IP) bool {
 				if ip := expectedIP(rec, v4, v6); ip != nil {
 					want = ip.String()
 				}
+			} else if rec.isTimestamp() {
+				want = "(timestamp)"
 			}
 			slog.Info("record incorrect or missing", "name", rec.Name, "type", rec.Type, "want", want)
 			need = true

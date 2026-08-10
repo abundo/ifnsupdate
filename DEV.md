@@ -118,8 +118,9 @@ Simulating address changes without root is hard (`ip addr add` needs privileges)
 
 - `loadConfig` — read YAML
 - `validateConfig` — required fields; normalize zone/name FQDNs; upper-case record types; default TTL `300` and TSIG algorithm `hmac-sha256`; parse `retry_interval` / `static_verify_interval` into `cfg.retryInterval` / `cfg.staticVerifyInterval`
-- `Record.Value` — static RDATA; empty on interface-backed A/AAAA
-- `Record.isStatic()` — CNAME/TXT always; A/AAAA when `value` is set
+- `Record.Value` — static RDATA; empty on interface-backed A/AAAA and timestamp TXT
+- `Record.isStatic()` — CNAME always; TXT when `value` is set; A/AAAA when `value` is set
+- `Record.isTimestamp()` — TXT with empty `value`; RDATA is `time.Now().UTC()` as RFC3339 when building the RR
 
 ### Runtime loop (`eventLoop`)
 
@@ -132,11 +133,11 @@ Simulating address changes without root is hard (`ip addr add` needs privileges)
 
 ### Record scopes
 
-| Scope          | Records included                        |
-| -------------- | --------------------------------------- |
-| `scopeAll`     | Every configured record                 |
-| `scopeDynamic` | A/AAAA without `value`                  |
-| `scopeStatic`  | A/AAAA with `value`, plus CNAME and TXT |
+| Scope          | Records included                                                         |
+| -------------- | ------------------------------------------------------------------------ |
+| `scopeAll`     | Every configured record                                                  |
+| `scopeDynamic` | A/AAAA without `value`, plus timestamp TXT (rides along)                 |
+| `scopeStatic`  | A/AAAA with `value`, CNAME, static TXT, plus timestamp TXT (rides along) |
 
 ### Address selection
 
@@ -151,6 +152,7 @@ Simulating address changes without root is hard (`ip addr add` needs privileges)
 - Optional `SetTsig` + `client.TsigSecret`
 - Fail if `Rcode != NOERROR`
 - `recordMatches` / `recordsNeedUpdate` verify each type (IP equality, CNAME target, TXT concatenated strings)
+- Timestamp TXT matches if any single TXT RR exists (value not compared), so an old ISO timestamp does not force a no-op rewrite; missing timestamp still needs update
 
 ### Caching / retries
 
@@ -168,6 +170,7 @@ Static records do not use the address cache; they are checked at startup and on 
 | Replace RRset (delete + insert)          | Classic dynamic-update pattern; avoids multi-A accumulation                         |
 | Require address for every dynamic record | Simpler UPDATE + post-update verify; operators only list families the interface has |
 | Static via `value` field                 | One schema for fixed A/AAAA, CNAME, TXT without a second config section             |
+| Empty TXT value = last-update timestamp  | Mirrors empty A/AAAA = from interface; dig shows when last UPDATE ran (RFC3339 UTC) |
 | Separate static verify interval          | Static data does not change with netlink; still recover from zone drift             |
 | Cache after success only                 | Avoid permanent silence after a single failed UPDATE                                |
 | Configurable retry interval              | Operators can tune recovery from nameserver outages                                 |
