@@ -210,12 +210,16 @@ Absolute owner names (trailing `.`) outside the zone are rejected.
 ./ifnsupdate                          # uses /etc/ifnsupdate/config.yaml
 ./ifnsupdate -config config.yaml      # after copying config.yaml.example (dev)
 ./ifnsupdate -config config.yaml -force   # one-shot: force UPDATE, then exit
+./ifnsupdate -delete myhost                 # delete all RRsets at myhost.<zone>
+./ifnsupdate -delete myhost -type TXT       # delete only TXT at that name
 ```
 
-| Flag      | Default                       | Description                                                                                                                         |
-| --------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `-config` | `/etc/ifnsupdate/config.yaml` | Path to YAML configuration file                                                                                                     |
-| `-force`  | off                           | Interactive one-shot: always send a DNS UPDATE even if records already match, then exit (refreshes any last-update timestamp `TXT`) |
+| Flag      | Default                       | Description                                                                                                                                            |
+| --------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `-config` | `/etc/ifnsupdate/config.yaml` | Path to YAML configuration file                                                                                                                        |
+| `-force`  | off                           | Interactive one-shot: always send a DNS UPDATE even if records already match, then exit (refreshes any last-update timestamp `TXT`)                    |
+| `-delete` | (empty)                       | One-shot: delete DNS records for this name (relative or FQDN in zone), then exit. Uses `dns.*` from the config only. Mutually exclusive with `-force`. |
+| `-type`   | (empty)                       | With `-delete`: RR type to remove (`A`, `AAAA`, `TXT`, …). If omitted, all RRsets at the name are deleted.                                             |
 
 `-config` defaults to `/etc/ifnsupdate/config.yaml`. For local development, copy `config.yaml.example` and pass `-config` explicitly.
 
@@ -229,6 +233,8 @@ Absolute owner names (trailing `.`) outside the zone are rejected.
 6. On UPDATE/verify failure, retries every `retry_interval`
 
 **Force mode** (`-force`): load config, force a DNS UPDATE for all records (even when already correct), then exit. Does not subscribe to netlink or run the monitor loop.
+
+**Delete mode** (`-delete`): load config DNS settings (server, zone, TSIG), send a single RFC 2136 UPDATE that removes the named records, then exit. Name resolution matches config record names (relative names get `dns.zone` appended). With `-type`, only that RRset is removed; without `-type`, every RRset at the name is removed. Does not require `interface` or `records` in the config.
 
 Example log output:
 

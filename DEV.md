@@ -49,6 +49,8 @@ Flags (binary):
 ```text
 -config string   path to YAML config (default "/etc/ifnsupdate/config.yaml")
 -force           force a DNS UPDATE even if records already match, then exit
+-delete string   delete DNS records for this name (one-shot), then exit
+-type string     RR type for -delete (e.g. A, TXT); empty = all types at the name
 ```
 
 ### Install / packaging

@@ -188,10 +188,9 @@ func parseDurationField(name, raw string, def time.Duration) (time.Duration, err
 	return d, nil
 }
 
-func validateConfig(cfg *Config) error {
-	if cfg.Interface == "" {
-		return fmt.Errorf("interface is required")
-	}
+// validateDNSConfig normalizes and checks dns.server, dns.zone, and optional TSIG.
+// Used by full config validation and by one-shot modes that only talk to the nameserver.
+func validateDNSConfig(cfg *Config) error {
 	if cfg.DNS.Server == "" {
 		return fmt.Errorf("dns.server is required")
 	}
@@ -211,6 +210,16 @@ func validateConfig(cfg *Config) error {
 		if cfg.DNS.TSIG.Algorithm == "" {
 			cfg.DNS.TSIG.Algorithm = "hmac-sha256"
 		}
+	}
+	return nil
+}
+
+func validateConfig(cfg *Config) error {
+	if cfg.Interface == "" {
+		return fmt.Errorf("interface is required")
+	}
+	if err := validateDNSConfig(cfg); err != nil {
+		return err
 	}
 
 	var err error
@@ -801,6 +810,46 @@ func performDNSUpdate(cfg *Config, recs []Record, v4, v6 net.IP) error {
 		slog.Info("will update", "name", rec.Name, "type", rec.Type, "rdata", rdata)
 	}
 
+	return exchangeDNSUpdate(cfg, msg)
+}
+
+// performDNSDelete sends a DNS UPDATE that removes records at name.
+//
+// If rrType is empty, all RRsets at name are deleted (RFC 2136 "delete all
+// RRsets from a name"). Otherwise only the RRset of that type is deleted.
+// rrType must be a known RR mnemonic when non-empty (e.g. "A", "TXT").
+func performDNSDelete(cfg *Config, name, rrType string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("delete name is required")
+	}
+	rrType = strings.ToUpper(strings.TrimSpace(rrType))
+
+	msg := new(dns.Msg)
+	msg.SetUpdate(cfg.DNS.Zone)
+
+	hdr := dns.RR_Header{Name: name, Class: dns.ClassINET}
+	if rrType == "" {
+		rr := &dns.ANY{Hdr: hdr}
+		msg.RemoveName([]dns.RR{rr})
+		slog.Info("will delete all records", "name", name)
+	} else {
+		t, ok := dns.StringToType[rrType]
+		if !ok || t == dns.TypeNone {
+			return fmt.Errorf("unknown RR type %q", rrType)
+		}
+		hdr.Rrtype = t
+		rr := &dns.ANY{Hdr: hdr}
+		msg.RemoveRRset([]dns.RR{rr})
+		slog.Info("will delete records", "name", name, "type", rrType)
+	}
+
+	return exchangeDNSUpdate(cfg, msg)
+}
+
+// exchangeDNSUpdate sends a prepared DNS UPDATE message (optional TSIG) and
+// checks for a successful reply.
+func exchangeDNSUpdate(cfg *Config, msg *dns.Msg) error {
 	client := &dns.Client{Net: "udp", Timeout: 10 * time.Second}
 	if cfg.DNS.TSIG != nil {
 		client.TsigSecret = map[string]string{cfg.DNS.TSIG.Name: cfg.DNS.TSIG.Secret}
@@ -838,13 +887,55 @@ func mapAlgorithm(name string) string {
 func main() {
 	configPath := flag.String("config", "/etc/ifnsupdate/config.yaml", "path to YAML configuration file")
 	forceUpdate := flag.Bool("force", false, "force a DNS UPDATE even if records already match, then exit")
+	deleteName := flag.String("delete", "", "delete DNS records for this name (one-shot), then exit")
+	deleteType := flag.String("type", "", "RR type to delete with -delete (e.g. A, TXT); if empty, delete all types at the name")
 	flag.Parse()
+
+	if *deleteName != "" && *forceUpdate {
+		slog.Error("-delete and -force are mutually exclusive")
+		os.Exit(1)
+	}
+	if strings.TrimSpace(*deleteType) != "" && strings.TrimSpace(*deleteName) == "" {
+		slog.Error("-type requires -delete")
+		os.Exit(1)
+	}
 
 	cfg, err := loadConfig(*configPath)
 	if err != nil {
 		slog.Error("failed to load config", "err", err)
 		os.Exit(1)
 	}
+
+	// One-shot: delete records at a name (optional type), then exit.
+	// Only dns.* from the config is required (server, zone, TSIG).
+	if strings.TrimSpace(*deleteName) != "" {
+		if err := validateDNSConfig(cfg); err != nil {
+			slog.Error("invalid config", "err", err)
+			os.Exit(1)
+		}
+		name, err := normalizeRecordName(*deleteName, cfg.DNS.Zone)
+		if err != nil {
+			slog.Error("invalid -delete name", "err", err)
+			os.Exit(1)
+		}
+		typ := strings.ToUpper(strings.TrimSpace(*deleteType))
+		if typ != "" {
+			if _, ok := dns.StringToType[typ]; !ok {
+				slog.Error("unknown RR type", "type", typ)
+				os.Exit(1)
+			}
+			slog.Info("deleting DNS records", "name", name, "type", typ)
+		} else {
+			slog.Info("deleting all DNS records at name", "name", name)
+		}
+		if err := performDNSDelete(cfg, name, typ); err != nil {
+			slog.Error("delete failed", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("delete complete")
+		return
+	}
+
 	if err := validateConfig(cfg); err != nil {
 		slog.Error("invalid config", "err", err)
 		os.Exit(1)

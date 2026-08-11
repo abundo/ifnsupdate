@@ -1033,6 +1033,131 @@ func TestPerformDNSUpdateAgainstMockServer(t *testing.T) {
 	}
 }
 
+func TestPerformDNSDelete(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		deleteName string
+		deleteType string
+		wantType   uint16 // expected Rrtype in the prerequisite-less delete RR
+		wantErr    string
+	}{
+		{
+			name:       "delete single type",
+			deleteName: "host.example.com.",
+			deleteType: "TXT",
+			wantType:   dns.TypeTXT,
+		},
+		{
+			name:       "delete type case insensitive",
+			deleteName: "host.example.com.",
+			deleteType: "aaaa",
+			wantType:   dns.TypeAAAA,
+		},
+		{
+			name:       "delete all types at name",
+			deleteName: "host.example.com.",
+			deleteType: "",
+			wantType:   dns.TypeANY,
+		},
+		{
+			name:       "unknown type",
+			deleteName: "host.example.com.",
+			deleteType: "NOTAREALTYPE",
+			wantErr:    "unknown RR type",
+		},
+		{
+			name:       "empty name",
+			deleteName: "  ",
+			deleteType: "A",
+			wantErr:    "delete name is required",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var (
+				mu       sync.Mutex
+				received []*dns.Msg
+			)
+			addr := startMockDNS(t, func(w dns.ResponseWriter, r *dns.Msg) {
+				mu.Lock()
+				received = append(received, r.Copy())
+				mu.Unlock()
+				m := new(dns.Msg)
+				m.SetReply(r)
+				m.Rcode = dns.RcodeSuccess
+				_ = w.WriteMsg(m)
+			})
+
+			cfg := &Config{
+				DNS: DNSConfig{Server: addr, Zone: "example.com."},
+			}
+			err := performDNSDelete(cfg, tt.deleteName, tt.deleteType)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+				}
+				mu.Lock()
+				n := len(received)
+				mu.Unlock()
+				if n != 0 {
+					t.Fatalf("expected no DNS exchange on error, got %d", n)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("performDNSDelete: %v", err)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if len(received) != 1 {
+				t.Fatalf("expected 1 UPDATE, got %d", len(received))
+			}
+			msg := received[0]
+			if msg.Opcode != dns.OpcodeUpdate {
+				t.Fatalf("opcode = %d, want UPDATE", msg.Opcode)
+			}
+			if len(msg.Question) != 1 || msg.Question[0].Name != "example.com." {
+				t.Fatalf("zone question = %v", msg.Question)
+			}
+			if len(msg.Ns) != 1 {
+				t.Fatalf("expected 1 update RR, got %d: %v", len(msg.Ns), msg.Ns)
+			}
+			rr := msg.Ns[0]
+			hdr := rr.Header()
+			if !strings.EqualFold(hdr.Name, "host.example.com.") {
+				t.Errorf("name = %q", hdr.Name)
+			}
+			if hdr.Class != dns.ClassANY {
+				t.Errorf("class = %d, want ClassANY", hdr.Class)
+			}
+			if hdr.Rrtype != tt.wantType {
+				t.Errorf("rrtype = %d (%s), want %d", hdr.Rrtype, dns.TypeToString[hdr.Rrtype], tt.wantType)
+			}
+		})
+	}
+}
+
+func TestPerformDNSDeleteRejected(t *testing.T) {
+	t.Parallel()
+	addr := startMockDNS(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.Rcode = dns.RcodeRefused
+		_ = w.WriteMsg(m)
+	})
+	cfg := &Config{DNS: DNSConfig{Server: addr, Zone: "example.com."}}
+	err := performDNSDelete(cfg, "host.example.com.", "A")
+	if err == nil || !strings.Contains(err.Error(), "REFUSED") {
+		t.Fatalf("expected REFUSED error, got %v", err)
+	}
+}
+
 func TestPerformDNSUpdateRequiresAddress(t *testing.T) {
 	var received atomic.Int32
 	addr := startMockDNS(t, func(w dns.ResponseWriter, r *dns.Msg) {
