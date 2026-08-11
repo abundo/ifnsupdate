@@ -10,6 +10,7 @@ Internal layout, build/test workflow, and design notes for `ifnsupdate`.
 ├── ifnsupdate_test.go         # unit + mock-server integration tests
 ├── ifnsupdate.service         # example systemd unit
 ├── Makefile                   # build / test / install / uninstall
+├── bin/                       # local build output (gitignored; make → bin/ifnsupdate)
 ├── config.yaml.example        # sample configuration (copy to config.yaml; do not commit secrets)
 ├── go.mod / go.sum
 ├── .goreleaser.yaml           # multi-arch release packaging
@@ -38,16 +39,17 @@ go mod tidy
 ## Build
 
 ```bash
-make              # or: go build -o ifnsupdate .
+make              # or: go build -o bin/ifnsupdate .
 make test
 make vet
-make clean
+make clean        # removes bin/
 ```
 
 Flags (binary):
 
 ```text
 -config string   path to YAML config (default "/etc/ifnsupdate/config.yaml")
+-daemon          continuous monitor (event loop); off by default (one-shot sync)
 -force           force a DNS UPDATE even if records already match, then exit
 -delete string   delete DNS records for this name (one-shot), then exit
 -type string     RR type for -delete (e.g. A, TXT); empty = all types at the name
@@ -108,7 +110,8 @@ Against a throwaway UDP mock on port 5353:
 ```bash
 # terminal 1: any minimal UPDATE responder
 # terminal 2:
-./ifnsupdate -config /path/to/test.yaml
+./bin/ifnsupdate -config /path/to/test.yaml          # one-shot
+./bin/ifnsupdate -daemon -config /path/to/test.yaml  # continuous
 ```
 
 Point `interface` at a real iface (`eth0`, …), `dns.server` at `127.0.0.1:5353`, and use a dummy zone/records. You should see opcode UPDATE and `DNS UPDATE successful`.
@@ -134,7 +137,12 @@ Simulating address changes without root is hard (`ip addr add` needs privileges)
 5. On failure: schedule a timer (`cfg.retryInterval`); on fire, `reconcile(force=true, scopeAll)` with **current** addresses
 6. Exit on `SIGINT` / `SIGTERM`
 
-CLI `-force` is a separate one-shot path in `main`: `initialSync(..., alwaysUpdate=true)` then exit (no netlink, no `eventLoop`).
+CLI modes in `main`:
+
+- Default (no mode flag): one-shot `initialSync(..., alwaysUpdate=false)` then exit (no netlink, no `eventLoop`).
+- `-force`: one-shot `initialSync(..., alwaysUpdate=true)` then exit.
+- `-daemon`: subscribe to netlink and run `eventLoop` until signal.
+- `-delete`: one-shot `performDNSDelete` then exit.
 
 ### Record scopes
 

@@ -886,6 +886,7 @@ func mapAlgorithm(name string) string {
 
 func main() {
 	configPath := flag.String("config", "/etc/ifnsupdate/config.yaml", "path to YAML configuration file")
+	daemon := flag.Bool("daemon", false, "run continuously: monitor interface and re-verify static records until stopped")
 	forceUpdate := flag.Bool("force", false, "force a DNS UPDATE even if records already match, then exit")
 	deleteName := flag.String("delete", "", "delete DNS records for this name (one-shot), then exit")
 	deleteType := flag.String("type", "", "RR type to delete with -delete (e.g. A, TXT); if empty, delete all types at the name")
@@ -893,6 +894,14 @@ func main() {
 
 	if *deleteName != "" && *forceUpdate {
 		slog.Error("-delete and -force are mutually exclusive")
+		os.Exit(1)
+	}
+	if *daemon && *forceUpdate {
+		slog.Error("-daemon and -force are mutually exclusive")
+		os.Exit(1)
+	}
+	if *daemon && strings.TrimSpace(*deleteName) != "" {
+		slog.Error("-daemon and -delete are mutually exclusive")
 		os.Exit(1)
 	}
 	if strings.TrimSpace(*deleteType) != "" && strings.TrimSpace(*deleteName) == "" {
@@ -957,6 +966,18 @@ func main() {
 			os.Exit(1)
 		}
 		slog.Info("force update complete")
+		return
+	}
+
+	// Default: one-shot verify/update, then exit. Continuous monitoring requires -daemon.
+	if !*daemon {
+		slog.Info("one-shot sync", "interface", cfg.Interface, "index", ifIndex)
+		last := &lastIPs{}
+		if err := initialSync(cfg, ifIndex, last, false); err != nil {
+			slog.Error("sync failed", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("sync complete")
 		return
 	}
 

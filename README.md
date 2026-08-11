@@ -14,6 +14,7 @@ When the interface gains, loses, or changes a global IPv4/IPv6 address, the clie
 - Replace semantics: remove the existing RRset, then insert the new record
 - Configurable retry after failed updates; periodic re-verify of static records
 - Always verifies all configured records (dynamic + static) at startup
+- Default one-shot sync; continuous monitoring only with `-daemon`
 - `-force` CLI flag for a one-shot forced DNS UPDATE (then exit)
 
 ## Requirements
@@ -59,7 +60,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ifnsupdate
 ```
 
-The unit runs `/usr/bin/ifnsupdate -config /etc/ifnsupdate/config.yaml`. Optional: uncomment `User=` / `Group=` in the unit and create a system user (`useradd --system --no-create-home --shell /usr/sbin/nologin ifnsupdate`); keep the config readable by that user (e.g. `root:ifnsupdate` mode `0640`).
+The unit runs `/usr/bin/ifnsupdate -daemon -config /etc/ifnsupdate/config.yaml`. Optional: uncomment `User=` / `Group=` in the unit and create a system user (`useradd --system --no-create-home --shell /usr/sbin/nologin ifnsupdate`); keep the config readable by that user (e.g. `root:ifnsupdate` mode `0640`).
 
 ### From source
 
@@ -67,7 +68,7 @@ The unit runs `/usr/bin/ifnsupdate -config /etc/ifnsupdate/config.yaml`. Optiona
 git clone https://github.com/abundo/ifnsupdate.git
 cd ifnsupdate
 make
-# or: go build -o ifnsupdate .
+# or: mkdir -p bin && go build -o bin/ifnsupdate .
 ```
 
 Install the binary, example config, and systemd unit (default prefix `/usr`):
@@ -106,7 +107,7 @@ Copy and edit the example:
 
 ```bash
 cp config.yaml.example config.yaml
-# or: cp config.yaml.example config.yaml.local && ./ifnsupdate -config config.yaml.local
+# or: cp config.yaml.example config.yaml.local && ./bin/ifnsupdate -config config.yaml.local
 ```
 
 Example `config.yaml.example`:
@@ -207,23 +208,27 @@ Absolute owner names (trailing `.`) outside the zone are rejected.
 ## Usage
 
 ```bash
-./ifnsupdate                          # uses /etc/ifnsupdate/config.yaml
-./ifnsupdate -config config.yaml      # after copying config.yaml.example (dev)
-./ifnsupdate -config config.yaml -force   # one-shot: force UPDATE, then exit
-./ifnsupdate -delete myhost                 # delete all RRsets at myhost.<zone>
-./ifnsupdate -delete myhost -type TXT       # delete only TXT at that name
+./bin/ifnsupdate                          # one-shot sync using /etc/ifnsupdate/config.yaml
+./bin/ifnsupdate -config config.yaml      # one-shot sync (dev config)
+./bin/ifnsupdate -daemon -config config.yaml  # continuous monitor (systemd uses this)
+./bin/ifnsupdate -config config.yaml -force   # one-shot: force UPDATE, then exit
+./bin/ifnsupdate -delete myhost                 # delete all RRsets at myhost.<zone>
+./bin/ifnsupdate -delete myhost -type TXT       # delete only TXT at that name
 ```
 
-| Flag      | Default                       | Description                                                                                                                                            |
-| --------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `-config` | `/etc/ifnsupdate/config.yaml` | Path to YAML configuration file                                                                                                                        |
-| `-force`  | off                           | Interactive one-shot: always send a DNS UPDATE even if records already match, then exit (refreshes any last-update timestamp `TXT`)                    |
-| `-delete` | (empty)                       | One-shot: delete DNS records for this name (relative or FQDN in zone), then exit. Uses `dns.*` from the config only. Mutually exclusive with `-force`. |
-| `-type`   | (empty)                       | With `-delete`: RR type to remove (`A`, `AAAA`, `TXT`, …). If omitted, all RRsets at the name are deleted.                                             |
+| Flag      | Default                       | Description                                                                                                                                                               |
+| --------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-config` | `/etc/ifnsupdate/config.yaml` | Path to YAML configuration file                                                                                                                                           |
+| `-daemon` | off                           | Continuous mode: monitor netlink address changes and re-verify static records until stopped. Required for the event loop. Mutually exclusive with `-force` and `-delete`. |
+| `-force`  | off                           | Interactive one-shot: always send a DNS UPDATE even if records already match, then exit (refreshes any last-update timestamp `TXT`)                                       |
+| `-delete` | (empty)                       | One-shot: delete DNS records for this name (relative or FQDN in zone), then exit. Uses `dns.*` from the config only. Mutually exclusive with `-force` and `-daemon`.      |
+| `-type`   | (empty)                       | With `-delete`: RR type to remove (`A`, `AAAA`, `TXT`, …). If omitted, all RRsets at the name are deleted.                                                                |
 
 `-config` defaults to `/etc/ifnsupdate/config.yaml`. For local development, copy `config.yaml.example` and pass `-config` explicitly.
 
-**Normal mode** (daemon): on start the client:
+**Default mode** (one-shot): load config, verify all configured records, send a DNS UPDATE only if needed, then exit. Does not subscribe to netlink or run the monitor loop.
+
+**Daemon mode** (`-daemon`): on start the client:
 
 1. Loads and validates the config
 2. Resolves the interface and reads current global addresses
@@ -236,7 +241,7 @@ Absolute owner names (trailing `.`) outside the zone are rejected.
 
 **Delete mode** (`-delete`): load config DNS settings (server, zone, TSIG), send a single RFC 2136 UPDATE that removes the named records, then exit. Name resolution matches config record names (relative names get `dns.zone` appended). With `-type`, only that RRset is removed; without `-type`, every RRset at the name is removed. Does not require `interface` or `records` in the config.
 
-Example log output:
+Example log output (`-daemon`):
 
 ```text
 monitoring interface eth0 (index 3)

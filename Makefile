@@ -14,6 +14,8 @@ UNITDIR     ?= /etc/systemd/system
 DESTDIR     ?=
 
 BINARY      := ifnsupdate
+OUTDIR      ?= bin
+OUT         := $(OUTDIR)/$(BINARY)
 GO          ?= go
 GOFLAGS     ?= -trimpath
 LDFLAGS     ?= -s -w
@@ -23,7 +25,8 @@ LDFLAGS     ?= -s -w
 all: build
 
 build:
-	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BINARY) .
+	mkdir -p $(OUTDIR)
+	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(OUT) .
 
 test:
 	$(GO) test $(GOFLAGS) ./...
@@ -32,11 +35,12 @@ vet:
 	$(GO) vet $(GOFLAGS) ./...
 
 clean:
-	rm -f $(BINARY)
+	rm -rf $(OUTDIR)
+	rm -f $(BINARY) # legacy path (pre-bin/ layout)
 
 install: build
 	install -d $(DESTDIR)$(BINDIR)
-	install -m 755 $(BINARY) $(DESTDIR)$(BINDIR)/$(BINARY)
+	install -m 755 $(OUT) $(DESTDIR)$(BINDIR)/$(BINARY)
 	install -d $(DESTDIR)$(SYSCONFDIR)
 	# Never overwrite a live config (may contain TSIG secrets)
 	if [ ! -e $(DESTDIR)$(SYSCONFDIR)/config.yaml ]; then \
@@ -64,14 +68,14 @@ uninstall:
 
 help:
 	@echo "Targets:"
-	@echo "  all / build   Build $(BINARY) (default)"
+	@echo "  all / build   Build $(OUT) (default)"
 	@echo "  test          Run go test ./..."
 	@echo "  vet           Run go vet ./..."
-	@echo "  clean         Remove built binary"
+	@echo "  clean         Remove $(OUTDIR)/ (and legacy ./$(BINARY))"
 	@echo "  install       Install binary, config example, and systemd unit"
 	@echo "  uninstall     Remove binary and unit (keeps config.yaml)"
 	@echo
 	@echo "Variables (override with make VAR=value):"
-	@echo "  PREFIX=$(PREFIX)  BINDIR=$(BINDIR)"
+	@echo "  PREFIX=$(PREFIX)  BINDIR=$(BINDIR)  OUTDIR=$(OUTDIR)"
 	@echo "  SYSCONFDIR=$(SYSCONFDIR)  UNITDIR=$(UNITDIR)"
 	@echo "  DESTDIR=$(DESTDIR)  GO=$(GO)"

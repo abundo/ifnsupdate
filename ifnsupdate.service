@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/ifnsupdate -config /etc/ifnsupdate/config.yaml
+ExecStart=/usr/bin/ifnsupdate -daemon -config /etc/ifnsupdate/config.yaml
 Restart=on-failure
 # Back off restarts on crash loops (RestartSteps/RestartMaxDelaySec need systemd ≥ 254)
 RestartSec=5
