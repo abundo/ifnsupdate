@@ -48,6 +48,7 @@ Flags (binary):
 
 ```text
 -config string   path to YAML config (default "config.yaml")
+-force           force a DNS UPDATE even if records already match, then exit
 ```
 
 ### Install / packaging
@@ -130,6 +131,8 @@ Simulating address changes without root is hard (`ip addr add` needs privileges)
 4. On `static_verify_interval` timer: `reconcile(force=true, scopeStatic)`
 5. On failure: schedule a timer (`cfg.retryInterval`); on fire, `reconcile(force=true, scopeAll)` with **current** addresses
 6. Exit on `SIGINT` / `SIGTERM`
+
+CLI `-force` is a separate one-shot path in `main`: `initialSync(..., alwaysUpdate=true)` then exit (no netlink, no `eventLoop`).
 
 ### Record scopes
 

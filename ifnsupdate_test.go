@@ -674,7 +674,7 @@ func TestInitialSyncErrorsWhenNoAddress(t *testing.T) {
 	}
 	_ = validateConfig(cfg)
 	last := &lastIPs{}
-	if err := initialSync(cfg, link.Attrs().Index, last); err == nil {
+	if err := initialSync(cfg, link.Attrs().Index, last, false); err == nil {
 		t.Fatal("expected error when interface has no address for configured record")
 	}
 	if updates.Load() != 0 {
@@ -749,7 +749,7 @@ func TestInitialSyncUpdatesWhenIncorrect(t *testing.T) {
 	}
 	_ = validateConfig(cfg)
 	last := &lastIPs{}
-	if err := initialSync(cfg, link.Attrs().Index, last); err != nil {
+	if err := initialSync(cfg, link.Attrs().Index, last, false); err != nil {
 		t.Fatal(err)
 	}
 	if updates.Load() != 1 {
@@ -799,11 +799,62 @@ func TestInitialSyncNoUpdateWhenAlreadyCorrect(t *testing.T) {
 	}
 	_ = validateConfig(cfg)
 	last := &lastIPs{}
-	if err := initialSync(cfg, link.Attrs().Index, last); err != nil {
+	if err := initialSync(cfg, link.Attrs().Index, last, false); err != nil {
 		t.Fatal(err)
 	}
 	if updates.Load() != 0 {
 		t.Fatalf("expected no UPDATE when DNS already correct, got %d", updates.Load())
+	}
+	if !last.v4.Equal(v4) {
+		t.Fatalf("last.v4 = %v, want %v", last.v4, v4)
+	}
+}
+
+func TestInitialSyncForceUpdateWhenAlreadyCorrect(t *testing.T) {
+	link, err := netlink.LinkByName("eth0")
+	if err != nil {
+		t.Skip(err)
+	}
+	v4, _, err := getGlobalAddrs(link.Attrs().Index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v4 == nil {
+		t.Skip("eth0 has no global IPv4")
+	}
+
+	var updates atomic.Int32
+	addr := startMockDNS(t, func(w dns.ResponseWriter, r *dns.Msg) {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		if r.Opcode == dns.OpcodeUpdate {
+			updates.Add(1)
+			m.Rcode = dns.RcodeSuccess
+			_ = w.WriteMsg(m)
+			return
+		}
+		// Always answer with the correct A so a non-force sync would skip UPDATE.
+		if len(r.Question) > 0 && r.Question[0].Qtype == dns.TypeA {
+			m.Answer = append(m.Answer, &dns.A{
+				Hdr: dns.RR_Header{Name: r.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+				A:   v4,
+			})
+		}
+		_ = w.WriteMsg(m)
+	})
+
+	cfg := &Config{
+		Interface: "eth0",
+		DNS:       DNSConfig{Server: addr, Zone: "example.com."},
+		Records:   []Record{{Name: "h.example.com.", Type: "A", TTL: 60}},
+	}
+	_ = validateConfig(cfg)
+	last := &lastIPs{}
+	if err := initialSync(cfg, link.Attrs().Index, last, true); err != nil {
+		t.Fatal(err)
+	}
+	if updates.Load() != 1 {
+		t.Fatalf("expected 1 forced UPDATE when DNS already correct, got %d", updates.Load())
 	}
 	if !last.v4.Equal(v4) {
 		t.Fatalf("last.v4 = %v, want %v", last.v4, v4)
@@ -876,7 +927,7 @@ func TestInitialSyncStaticRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := &lastIPs{}
-	if err := initialSync(cfg, link.Attrs().Index, last); err != nil {
+	if err := initialSync(cfg, link.Attrs().Index, last, false); err != nil {
 		t.Fatal(err)
 	}
 	if updates.Load() != 1 {

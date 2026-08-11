@@ -14,6 +14,7 @@ When the interface gains, loses, or changes a global IPv4/IPv6 address, the clie
 - Replace semantics: remove the existing RRset, then insert the new record
 - Configurable retry after failed updates; periodic re-verify of static records
 - Always verifies all configured records (dynamic + static) at startup
+- `-force` CLI flag for a one-shot forced DNS UPDATE (then exit)
 
 ## Requirements
 
@@ -207,11 +208,17 @@ Absolute owner names (trailing `.`) outside the zone are rejected.
 
 ```bash
 ./ifnsupdate -config config.yaml   # after copying config.yaml.example
+./ifnsupdate -config config.yaml -force   # one-shot: force UPDATE, then exit
 ```
+
+| Flag      | Default       | Description                                                                                                                         |
+| --------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `-config` | `config.yaml` | Path to YAML configuration file                                                                                                     |
+| `-force`  | off           | Interactive one-shot: always send a DNS UPDATE even if records already match, then exit (refreshes any last-update timestamp `TXT`) |
 
 `-config` defaults to `config.yaml` in the current directory (create it from `config.yaml.example`).
 
-On start the client:
+**Normal mode** (daemon): on start the client:
 
 1. Loads and validates the config
 2. Resolves the interface and reads current global addresses
@@ -219,6 +226,8 @@ On start the client:
 4. Listens for netlink address changes until `SIGINT` / `SIGTERM`
 5. Re-verifies static records every `static_verify_interval`
 6. On UPDATE/verify failure, retries every `retry_interval`
+
+**Force mode** (`-force`): load config, force a DNS UPDATE for all records (even when already correct), then exit. Does not subscribe to netlink or run the monitor loop.
 
 Example log output:
 

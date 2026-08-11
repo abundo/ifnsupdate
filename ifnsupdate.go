@@ -576,9 +576,12 @@ func updateAndVerify(cfg *Config, recs []Record, v4, v6 net.IP) error {
 // (static-only passes always re-check). force is used for initial sync, timer retry,
 // and pending failures.
 //
+// alwaysUpdate skips the "already correct" short-circuit and always sends a DNS UPDATE
+// (CLI -force one-shot). Useful to refresh a last-update timestamp TXT.
+//
 // last is advanced only when dynamic records are in scope and the update succeeds
 // (or already matches).
-func reconcile(cfg *Config, ifIndex int, last *lastIPs, force bool, scope recordScope) error {
+func reconcile(cfg *Config, ifIndex int, last *lastIPs, force bool, scope recordScope, alwaysUpdate bool) error {
 	v4, v6, err := readInterfaceAddrs(ifIndex)
 	if err != nil {
 		return err
@@ -590,7 +593,7 @@ func reconcile(cfg *Config, ifIndex int, last *lastIPs, force bool, scope record
 	}
 
 	// Address-driven early exit only when we care about interface-sourced records.
-	if scope != scopeStatic && !force && v4.Equal(last.v4) && v6.Equal(last.v6) {
+	if scope != scopeStatic && !force && !alwaysUpdate && v4.Equal(last.v4) && v6.Equal(last.v6) {
 		return nil
 	}
 
@@ -603,7 +606,7 @@ func reconcile(cfg *Config, ifIndex int, last *lastIPs, force bool, scope record
 		}
 	}
 
-	if !recordsNeedUpdate(cfg, recs, v4, v6) {
+	if !alwaysUpdate && !recordsNeedUpdate(cfg, recs, v4, v6) {
 		if scope == scopeStatic {
 			slog.Info("all static DNS records already correct")
 		} else {
@@ -613,6 +616,9 @@ func reconcile(cfg *Config, ifIndex int, last *lastIPs, force bool, scope record
 			last.v4, last.v6 = v4, v6
 		}
 		return nil
+	}
+	if alwaysUpdate {
+		slog.Info("forcing DNS UPDATE")
 	}
 	if err := updateAndVerify(cfg, recs, v4, v6); err != nil {
 		return err
@@ -624,14 +630,15 @@ func reconcile(cfg *Config, ifIndex int, last *lastIPs, force bool, scope record
 }
 
 // initialSync verifies all records and updates if needed (always re-checks DNS).
-func initialSync(cfg *Config, ifIndex int, last *lastIPs) error {
-	return reconcile(cfg, ifIndex, last, true, scopeAll)
+// When alwaysUpdate is true, a DNS UPDATE is sent even if records already match.
+func initialSync(cfg *Config, ifIndex int, last *lastIPs, alwaysUpdate bool) error {
+	return reconcile(cfg, ifIndex, last, true, scopeAll, alwaysUpdate)
 }
 
 // refreshAndUpdate sends a DNS UPDATE only when interface addresses changed since last.
 // Only interface-backed records are considered.
 func refreshAndUpdate(cfg *Config, ifIndex int, last *lastIPs) error {
-	return reconcile(cfg, ifIndex, last, false, scopeDynamic)
+	return reconcile(cfg, ifIndex, last, false, scopeDynamic, false)
 }
 
 // stopTimer stops t and drains its channel if the timer already fired.
@@ -671,7 +678,7 @@ func eventLoop(cfg *Config, ifIndex int, addrUpdates <-chan netlink.AddrUpdate, 
 	}
 
 	apply := func(force bool, scope recordScope) {
-		if err := reconcile(cfg, ifIndex, last, force, scope); err != nil {
+		if err := reconcile(cfg, ifIndex, last, force, scope, false); err != nil {
 			slog.Error("update failed", "err", err)
 			pending = true
 			scheduleRetry()
@@ -734,7 +741,7 @@ func eventLoop(cfg *Config, ifIndex int, addrUpdates <-chan netlink.AddrUpdate, 
 			staticTimer = nil
 			staticC = nil
 			slog.Info("periodic static record verify")
-			if err := reconcile(cfg, ifIndex, last, true, scopeStatic); err != nil {
+			if err := reconcile(cfg, ifIndex, last, true, scopeStatic, false); err != nil {
 				slog.Error("static update failed", "err", err)
 				pending = true
 				scheduleRetry()
@@ -830,6 +837,7 @@ func mapAlgorithm(name string) string {
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to YAML configuration file")
+	forceUpdate := flag.Bool("force", false, "force a DNS UPDATE even if records already match, then exit")
 	flag.Parse()
 
 	cfg, err := loadConfig(*configPath)
@@ -848,6 +856,19 @@ func main() {
 		os.Exit(1)
 	}
 	ifIndex := link.Attrs().Index
+
+	// Interactive one-shot: force UPDATE for all records, then exit.
+	if *forceUpdate {
+		slog.Info("forcing DNS UPDATE", "interface", cfg.Interface, "index", ifIndex)
+		last := &lastIPs{}
+		if err := initialSync(cfg, ifIndex, last, true); err != nil {
+			slog.Error("force update failed", "err", err)
+			os.Exit(1)
+		}
+		slog.Info("force update complete")
+		return
+	}
+
 	slog.Info("monitoring interface", "interface", cfg.Interface, "index", ifIndex)
 	slog.Info("retry interval", "interval", cfg.retryInterval)
 
