@@ -207,16 +207,17 @@ Absolute owner names (trailing `.`) outside the zone are rejected.
 ## Usage
 
 ```bash
-./ifnsupdate -config config.yaml   # after copying config.yaml.example
+./ifnsupdate                          # uses /etc/ifnsupdate/config.yaml
+./ifnsupdate -config config.yaml      # after copying config.yaml.example (dev)
 ./ifnsupdate -config config.yaml -force   # one-shot: force UPDATE, then exit
 ```
 
-| Flag      | Default       | Description                                                                                                                         |
-| --------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `-config` | `config.yaml` | Path to YAML configuration file                                                                                                     |
-| `-force`  | off           | Interactive one-shot: always send a DNS UPDATE even if records already match, then exit (refreshes any last-update timestamp `TXT`) |
+| Flag      | Default                       | Description                                                                                                                         |
+| --------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `-config` | `/etc/ifnsupdate/config.yaml` | Path to YAML configuration file                                                                                                     |
+| `-force`  | off                           | Interactive one-shot: always send a DNS UPDATE even if records already match, then exit (refreshes any last-update timestamp `TXT`) |
 
-`-config` defaults to `config.yaml` in the current directory (create it from `config.yaml.example`).
+`-config` defaults to `/etc/ifnsupdate/config.yaml`. For local development, copy `config.yaml.example` and pass `-config` explicitly.
 
 **Normal mode** (daemon): on start the client:
 

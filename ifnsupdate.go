@@ -836,7 +836,7 @@ func mapAlgorithm(name string) string {
 }
 
 func main() {
-	configPath := flag.String("config", "config.yaml", "path to YAML configuration file")
+	configPath := flag.String("config", "/etc/ifnsupdate/config.yaml", "path to YAML configuration file")
 	forceUpdate := flag.Bool("force", false, "force a DNS UPDATE even if records already match, then exit")
 	flag.Parse()
 

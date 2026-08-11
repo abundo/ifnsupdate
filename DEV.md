@@ -47,7 +47,7 @@ make clean
 Flags (binary):
 
 ```text
--config string   path to YAML config (default "config.yaml")
+-config string   path to YAML config (default "/etc/ifnsupdate/config.yaml")
 -force           force a DNS UPDATE even if records already match, then exit
 ```
 
